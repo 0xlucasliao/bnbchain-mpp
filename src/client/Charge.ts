@@ -45,7 +45,7 @@ export interface ClientWalletAdapter {
       chainId: number | bigint;
       verifyingContract: `0x${string}`;
     };
-    types: Record<string, Array<{ name: string; type: string }>>;
+    types: Record<string, ReadonlyArray<{ name: string; type: string }>>;
     primaryType: string;
     message: Record<string, unknown>;
   }): Promise<Hex>;
@@ -53,8 +53,8 @@ export interface ClientWalletAdapter {
 
 export interface ClientPublicAdapter {
   call(args: {
-    account?: `0x${string}`;
-    to: `0x${string}`;
+    account?: unknown;
+    to?: `0x${string}` | null;
     data?: Hex;
     value?: bigint;
   }): Promise<unknown>;
@@ -172,7 +172,7 @@ export class BnbClientChargeMethod {
       throw new Error("402 response missing WWW-Authenticate header");
     }
 
-    const challenge = parseWwwAuthenticateHeader<ChargeChallenge>(header);
+    const challenge = parseWwwAuthenticateHeader(header) as ChargeChallenge;
     const authorization = await this.handleChallenge(challenge);
 
     const headers = new Headers(init?.headers);

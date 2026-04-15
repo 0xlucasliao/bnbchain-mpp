@@ -1,5 +1,3 @@
-import type { PublicClient } from "viem";
-
 export class SimulationError extends Error {
   public readonly code = "SIMULATION_FAILED";
 
@@ -16,8 +14,17 @@ export type SimulationParams = {
   value?: bigint;
 };
 
+export interface SimulationClientAdapter {
+  call(args: {
+    account?: unknown;
+    to: `0x${string}`;
+    data?: `0x${string}`;
+    value?: bigint;
+  }): Promise<unknown>;
+}
+
 export async function simulateCall(
-  client: Pick<PublicClient, "call">,
+  client: SimulationClientAdapter,
   params: SimulationParams,
 ): Promise<void> {
   try {

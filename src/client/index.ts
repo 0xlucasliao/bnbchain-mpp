@@ -2,7 +2,7 @@ export {
   Mppx,
   bnb,
   type BnbClientChargeConfig,
-  type ClientChargeMethod,
+  type BnbClientChargeMethod,
   type ClientPublicAdapter,
   type ClientWalletAdapter,
 } from "./Charge.js";

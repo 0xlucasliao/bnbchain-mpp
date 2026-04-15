@@ -2,8 +2,8 @@ import type { PublicClient } from "viem";
 import {
   createBnbChargeServerMethod,
   type BnbChargeServerMethod,
-  type ChargeServerConfig,
   type HttpLikeRequest,
+  type ServerChargeConfig,
   type ServerPublicClientAdapter,
 } from "./Charge.js";
 
@@ -34,7 +34,7 @@ export class Mppx {
 
 export const bnb = {
   charge(
-    config: ChargeServerConfig,
+    config: ServerChargeConfig,
     publicClient: PublicClient | ServerPublicClientAdapter,
   ): BnbChargeServerMethod {
     return createBnbChargeServerMethod(
@@ -44,4 +44,4 @@ export const bnb = {
   },
 };
 
-export type { ChargeServerConfig };
+export type { ServerChargeConfig };

@@ -16,6 +16,8 @@ import { InMemoryStore, type ConsumedStore, type TxMeta } from "../utils/replay.
 const transferEvent = parseAbiItem(
   "event Transfer(address indexed from, address indexed to, uint256 value)",
 );
+const TRANSFER_TOPIC =
+  "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55aebf4eecb3f" as const;
 
 export interface ServerPublicClientAdapter {
   getTransaction(args: { hash: Hex }): Promise<{
@@ -226,7 +228,7 @@ export class BnbChargeServerMethod {
     } else {
       const tokenAddress = challenge.asset.address!.toLowerCase();
       const transferLog = receipt.logs.find(
-        (log) => log.address.toLowerCase() === tokenAddress && log.topics[0] === transferEvent.signature,
+        (log) => log.address.toLowerCase() === tokenAddress && log.topics[0] === TRANSFER_TOPIC,
       );
       if (!transferLog) {
         return this.challengeResult(challenge.amount, challenge.currency, {
@@ -237,7 +239,7 @@ export class BnbChargeServerMethod {
 
       const decoded = decodeEventLog({
         abi: [transferEvent],
-        topics: transferLog.topics,
+        topics: transferLog.topics as [Hex, ...Hex[]],
         data: transferLog.data,
       });
       const args = decoded.args as {
