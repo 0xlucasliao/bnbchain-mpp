@@ -7,10 +7,14 @@ import {
 import { buildPaymentReceiptHeader } from "../src/utils/receipt.js";
 import { InMemoryStore, RedisStore, type TxMeta } from "../src/utils/replay.js";
 import {
+  buildPaymentWwwAuthenticateHeader,
+  chargeChallengeToRequestB64,
+  challengeExpiresToRfc3339,
   decodeWwwAuthenticatePayload,
   encodeAuthorizationCredential,
   parseAuthorizationHeader,
-  toWwwAuthenticateHeader,
+  PAYMENT_INTENT_CHARGE,
+  PAYMENT_METHOD_BNB,
 } from "../src/utils/httpAuth.js";
 
 const challengeFixture: ChargeChallenge = {
@@ -48,38 +52,59 @@ describe("schemas", () => {
   });
 });
 
-describe("headers", () => {
-  it("encodes and decodes challenge header", () => {
-    const header = toWwwAuthenticateHeader(challengeFixture);
+describe("Payment wire (draft-httpauth-payment)", () => {
+  it("round-trips WWW-Authenticate Payment challenge", () => {
+    const request = chargeChallengeToRequestB64(challengeFixture);
+    const wire = {
+      id: "testid",
+      realm: "api.example",
+      method: PAYMENT_METHOD_BNB,
+      intent: PAYMENT_INTENT_CHARGE,
+      request,
+      expires: challengeExpiresToRfc3339(challengeFixture.expiresAt),
+    };
+    const header = buildPaymentWwwAuthenticateHeader(wire);
     const decoded = decodeWwwAuthenticatePayload(header);
-    expect(decoded).toEqual(challengeFixture);
+    expect(decoded.inner).toEqual(challengeFixture);
+    expect(decoded.wire.id).toBe("testid");
   });
 
-  it("encodes and decodes authorization credential", () => {
+  it("round-trips Authorization Payment credential", () => {
+    const request = chargeChallengeToRequestB64(challengeFixture);
+    const wire = {
+      id: "cid1",
+      realm: "api.example",
+      method: PAYMENT_METHOD_BNB,
+      intent: PAYMENT_INTENT_CHARGE,
+      request,
+      expires: challengeExpiresToRfc3339(challengeFixture.expiresAt),
+    };
     const authorization = encodeAuthorizationCredential({
-      method: "bnb-charge",
-      txHash: `0x${"ab".repeat(32)}`,
-      from: "0x1111111111111111111111111111111111111111",
-      serverNonce: `0x${"12".repeat(32)}`,
-      chainId: 56,
+      challenge: wire,
+      payload: {
+        type: "hash",
+        hash: `0x${"ab".repeat(32)}`,
+        from: "0x1111111111111111111111111111111111111111",
+      },
     });
-    expect(parseAuthorizationHeader(authorization)).toMatchObject({
-      txHash: `0x${"ab".repeat(32)}`,
-    });
+    const parsed = parseAuthorizationHeader(authorization);
+    expect(parsed.payload).toMatchObject({ type: "hash" });
+    expect(parsed.challenge.request).toBe(wire.request);
   });
 });
 
 describe("receipt", () => {
-  it("builds payment receipt string", () => {
+  it("builds Payment-Receipt base64url JSON (draft-httpauth-payment §5.3)", () => {
     const header = buildPaymentReceiptHeader({
       txHash: "0xabc",
       amount: "123",
       currency: "USDT",
       chainId: 56,
+      paymentMethod: "bnb",
+      challengeId: "ch1",
     });
-    expect(header).toBe(
-      "method=bnb-charge; txHash=0xabc; amount=123; currency=USDT; chainId=56",
-    );
+    expect(header.length).toBeGreaterThan(20);
+    expect(header).not.toContain(";");
   });
 });
 

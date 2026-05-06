@@ -9,7 +9,16 @@ import {
   type ChargeCredential,
   type PaymentError,
 } from "../Methods.js";
-import { buildWwwAuthenticateHeader, parseAuthorizationHeader } from "../utils/httpAuth.js";
+import {
+  buildPaymentWwwAuthenticateHeader,
+  chargeChallengeToRequestB64,
+  challengeExpiresToRfc3339,
+  newPaymentChallengeId,
+  parsePaymentAuthorizationHeader,
+  PAYMENT_INTENT_CHARGE,
+  PAYMENT_METHOD_BNB,
+  type PaymentChallengeWire,
+} from "../utils/paymentHttp.js";
 import { buildPaymentReceiptHeader } from "../utils/receipt.js";
 import { InMemoryStore, type ConsumedStore, type TxMeta } from "../utils/replay.js";
 
@@ -41,6 +50,8 @@ export interface ServerChargeConfig {
   asset: ChargeAsset;
   rpcUrl: string;
   chainId: number;
+  /** Protection space for `WWW-Authenticate: Payment` (draft-httpauth-payment). */
+  realm?: string;
   confirmations?: number;
   nonceTtlSeconds?: number;
   store?: ConsumedStore;
@@ -66,13 +77,14 @@ export type VerifiedResult = {
   ): T;
 };
 
-type NonceRecord = {
+type PendingChallenge = {
   challenge: ChargeChallenge;
+  requestB64: string;
 };
 
 export class BnbChargeServerMethod {
   private readonly store: ConsumedStore;
-  private readonly nonceMap = new Map<string, NonceRecord>();
+  private readonly pendingById = new Map<string, PendingChallenge>();
   private readonly ttlSeconds: number;
   private readonly confirmations: number;
   private readonly now: () => number;
@@ -88,6 +100,13 @@ export class BnbChargeServerMethod {
   }
 
   public createChallenge(amount: string, currency: string): ChargeChallenge {
+    return this.mintChallenge(amount, currency).challenge;
+  }
+
+  private mintChallenge(
+    amount: string,
+    currency: string,
+  ): { challenge: ChargeChallenge; wire: PaymentChallengeWire } {
     const now = this.now();
     const challenge = challengePayloadSchema.parse({
       method: BNB_CHARGE_METHOD,
@@ -101,8 +120,18 @@ export class BnbChargeServerMethod {
       feeSponsor: false,
       rpcUrl: this.config.rpcUrl,
     });
-    this.nonceMap.set(challenge.serverNonce.toLowerCase(), { challenge });
-    return challenge;
+    const id = newPaymentChallengeId();
+    const requestB64 = chargeChallengeToRequestB64(challenge);
+    const wire: PaymentChallengeWire = {
+      id,
+      realm: this.config.realm ?? "payment",
+      method: PAYMENT_METHOD_BNB,
+      intent: PAYMENT_INTENT_CHARGE,
+      request: requestB64,
+      expires: challengeExpiresToRfc3339(challenge.expiresAt),
+    };
+    this.pendingById.set(id, { challenge, requestB64 });
+    return { challenge, wire };
   }
 
   public async handle(
@@ -114,9 +143,9 @@ export class BnbChargeServerMethod {
       return this.challengeResult(params.amount, params.currency);
     }
 
-    let authorization: unknown;
+    let envelope: ReturnType<typeof parsePaymentAuthorizationHeader>;
     try {
-      authorization = parseAuthorizationHeader(authorizationHeader);
+      envelope = parsePaymentAuthorizationHeader(authorizationHeader);
     } catch {
       return this.challengeResult(params.amount, params.currency, {
         code: "INVALID_CREDENTIAL",
@@ -124,24 +153,45 @@ export class BnbChargeServerMethod {
       });
     }
 
-    const parsed = credentialPayloadSchema.safeParse(authorization);
-    if (!parsed.success) {
+    if (envelope.challenge.method !== PAYMENT_METHOD_BNB || envelope.challenge.intent !== PAYMENT_INTENT_CHARGE) {
       return this.challengeResult(params.amount, params.currency, {
         code: "INVALID_CREDENTIAL",
-        message: parsed.error.issues.map((issue) => issue.message).join(", "),
+        message: "Unsupported Payment method or intent",
       });
     }
 
-    const credential = parsed.data;
-    const nonceRecord = this.nonceMap.get(credential.serverNonce.toLowerCase());
-    if (!nonceRecord) {
+    if (envelope.payload.type === "bnb-sponsor") {
+      return this.challengeResult(params.amount, params.currency, {
+        code: "INVALID_CREDENTIAL",
+        message: "Fee-sponsored credentials are not supported by this server build",
+      });
+    }
+
+    const txHashEarly = envelope.payload.hash.toLowerCase();
+    if (await this.store.has(txHashEarly)) {
+      return this.challengeResult(params.amount, params.currency, {
+        code: "REPLAY_DETECTED",
+        message: "Transaction hash already consumed",
+      });
+    }
+
+    const pending = this.pendingById.get(envelope.challenge.id);
+    if (!pending || pending.requestB64 !== envelope.challenge.request) {
       return this.challengeResult(params.amount, params.currency, {
         code: "NONCE_MISMATCH",
-        message: "Unknown challenge nonce",
+        message: "Unknown or tampered Payment challenge",
       });
     }
 
-    const challenge = nonceRecord.challenge;
+    const challenge = pending.challenge;
+    const credential = credentialPayloadSchema.parse({
+      method: BNB_CHARGE_METHOD,
+      from: envelope.payload.from,
+      serverNonce: challenge.serverNonce,
+      chainId: challenge.chainId,
+      txHash: envelope.payload.type === "hash" ? envelope.payload.hash : undefined,
+    });
+
     if (credential.chainId !== this.config.chainId) {
       return this.challengeResult(params.amount, params.currency, {
         code: "CHAIN_MISMATCH",
@@ -163,12 +213,13 @@ export class BnbChargeServerMethod {
       });
     }
 
-    return this.verifyOnchainCredential(credential, challenge);
+    return this.verifyOnchainCredential(credential, challenge, envelope.challenge.id);
   }
 
   private async verifyOnchainCredential(
     credential: ChargeCredential,
     challenge: ChargeChallenge,
+    paymentChallengeId: string,
   ): Promise<ChallengeResult | VerifiedResult> {
     if (!credential.txHash) {
       return this.challengeResult(challenge.amount, challenge.currency, {
@@ -269,7 +320,7 @@ export class BnbChargeServerMethod {
     }
 
     await this.consumeTx(txHash, credential, challenge);
-    return this.verifiedResult(txHash, challenge.amount, challenge.currency);
+    return this.verifiedResult(txHash, challenge.amount, challenge.currency, paymentChallengeId);
   }
 
   private async consumeTx(
@@ -293,23 +344,31 @@ export class BnbChargeServerMethod {
     currency: string,
     error?: PaymentError,
   ): ChallengeResult {
-    const challenge = this.createChallenge(amount, currency);
+    const { challenge, wire } = this.mintChallenge(amount, currency);
     return {
       status: 402,
       challenge,
       headers: {
-        "WWW-Authenticate": buildWwwAuthenticateHeader(challenge),
+        "WWW-Authenticate": buildPaymentWwwAuthenticateHeader(wire),
+        "Cache-Control": "no-store",
       },
       error,
     };
   }
 
-  private verifiedResult(txHash: string, amount: string, currency: string): VerifiedResult {
+  private verifiedResult(
+    txHash: string,
+    amount: string,
+    currency: string,
+    paymentChallengeId: string,
+  ): VerifiedResult {
     const receiptHeader = buildPaymentReceiptHeader({
       txHash,
       amount,
       currency,
       chainId: this.config.chainId,
+      paymentMethod: PAYMENT_METHOD_BNB,
+      challengeId: paymentChallengeId,
     });
     return {
       status: 200,

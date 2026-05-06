@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { bnb } from "../src/server/index.js";
 import { InMemoryStore } from "../src/utils/replay.js";
-import { encodeAuthorizationCredential } from "../src/utils/httpAuth.js";
+import {
+  encodeAuthorizationCredential,
+  parsePaymentChallengeFromWwwAuthenticate,
+} from "../src/utils/httpAuth.js";
 
 const okRpcClient = {
   async getTransaction() {
@@ -23,7 +26,7 @@ const okRpcClient = {
 };
 
 describe("server charge flow", () => {
-  it("issues a challenge when no authorization is present", async () => {
+  it("issues a Payment challenge when no authorization is present", async () => {
     const method = bnb.charge(
       {
         recipient: "0x1111111111111111111111111111111111111111",
@@ -34,6 +37,7 @@ describe("server charge flow", () => {
         },
         rpcUrl: "https://bsc-dataseed.binance.org",
         chainId: 56,
+        realm: "test",
         store: new InMemoryStore(),
       },
       okRpcClient,
@@ -52,7 +56,9 @@ describe("server charge flow", () => {
     expect(result.status).toBe(402);
     if (result.status === 402) {
       expect(result.challenge.method).toBe("bnb-charge");
-      expect(result.headers["WWW-Authenticate"]).toContain('challenge="');
+      const www = result.headers["WWW-Authenticate"] ?? "";
+      expect(www.toLowerCase()).toContain("payment");
+      expect(www).toContain("request=");
     }
   });
 
@@ -68,6 +74,7 @@ describe("server charge flow", () => {
         },
         rpcUrl: "https://bsc-dataseed.binance.org",
         chainId: 56,
+        realm: "test",
         store,
       },
       okRpcClient,
@@ -83,12 +90,17 @@ describe("server charge flow", () => {
     expect(first.status).toBe(402);
     if (first.status !== 402) return;
 
+    const www = first.headers["WWW-Authenticate"];
+    expect(www).toBeTruthy();
+    const { wire } = parsePaymentChallengeFromWwwAuthenticate(www!);
+
     const authorization = encodeAuthorizationCredential({
-      method: "bnb-charge",
-      txHash: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      from: "0x1111111111111111111111111111111111111111",
-      serverNonce: first.challenge.serverNonce,
-      chainId: 56,
+      challenge: wire,
+      payload: {
+        type: "hash",
+        hash: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        from: "0x1111111111111111111111111111111111111111",
+      },
     });
 
     const ok = await method.handle(

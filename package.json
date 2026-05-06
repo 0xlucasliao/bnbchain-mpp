@@ -25,7 +25,10 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
-    "lint": "tsc --noEmit"
+    "test:live": "vitest run test/bnbchain.live-full-run.test.ts",
+    "lint": "tsc --noEmit",
+    "demo:dev": "npm run build && npm install --prefix demo && npm run dev --prefix demo",
+    "demo:build": "npm run build && npm install --prefix demo && npm run build --prefix demo"
   },
   "keywords": [
     "mpp",
@@ -36,6 +39,7 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "canonicalize": "^3.0.0",
     "viem": "^2.38.3",
     "zod": "^4.1.12"
   },

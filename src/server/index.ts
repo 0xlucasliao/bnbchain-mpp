@@ -2,10 +2,14 @@ import type { PublicClient } from "viem";
 import {
   createBnbChargeServerMethod,
   type BnbChargeServerMethod,
+  type ChallengeResult,
   type HttpLikeRequest,
   type ServerChargeConfig,
   type ServerPublicClientAdapter,
+  type VerifiedResult,
 } from "./Charge.js";
+
+export type { ChallengeResult, ServerPublicClientAdapter, VerifiedResult };
 
 export interface MppxServerMethod {
   handle(req: HttpLikeRequest, params: { amount: string; currency: string }): Promise<unknown>;

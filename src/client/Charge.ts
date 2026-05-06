@@ -6,6 +6,7 @@ import {
   parseAuthorizationHeader,
   parseWwwAuthenticateHeader,
 } from "../utils/httpAuth.js";
+import type { PaymentClientChallenge } from "../utils/paymentHttp.js";
 import { simulateCall } from "../utils/simulate.js";
 
 const erc20Abi = [
@@ -66,13 +67,38 @@ export interface BnbClientChargeConfig {
   rpcUrl?: string;
   maxAmount?: string;
   acceptedCurrencies?: string[];
+  /**
+   * If set, called after a payment tx is broadcast so the client can wait for inclusion
+   * before returning the Authorization header (avoids server `TX_NOT_FOUND` races).
+   */
+  waitForTransactionReceipt?(args: { hash: Hex }): Promise<void>;
 }
 
 export class BnbClientChargeMethod {
   public constructor(private readonly config: BnbClientChargeConfig) {}
 
+  private async waitIfConfigured(txHash: Hex): Promise<void> {
+    const w = this.config.waitForTransactionReceipt;
+    if (w) {
+      await w({ hash: txHash });
+    }
+  }
+
   public async handleChallenge(challengeInput: unknown): Promise<string> {
-    const challenge = challengePayloadSchema.parse(challengeInput);
+    let payment: PaymentClientChallenge | undefined;
+    let challenge: ChargeChallenge;
+    if (
+      challengeInput !== null &&
+      typeof challengeInput === "object" &&
+      "inner" in challengeInput &&
+      "wire" in challengeInput
+    ) {
+      payment = challengeInput as PaymentClientChallenge;
+      challenge = payment.inner;
+    } else {
+      challenge = challengePayloadSchema.parse(challengeInput);
+    }
+
     this.enforceClientGuards(challenge);
 
     if (challenge.feeSponsor) {
@@ -100,12 +126,16 @@ export class BnbClientChargeMethod {
         },
       });
 
+      if (!payment) {
+        throw new Error("Fee sponsor flow requires a Payment challenge (parse WWW-Authenticate via parseWwwAuthenticateHeader)");
+      }
       return encodeAuthorizationCredential({
-        method: BNB_CHARGE_METHOD,
-        signedAuth,
-        from: this.config.signer.account.address,
-        serverNonce: challenge.serverNonce,
-        chainId: challenge.chainId,
+        challenge: payment.wire,
+        payload: {
+          type: "bnb-sponsor",
+          signedAuth,
+          from: this.config.signer.account.address,
+        },
       });
     }
 
@@ -121,12 +151,18 @@ export class BnbClientChargeMethod {
         value: BigInt(challenge.amount),
       });
 
+      await this.waitIfConfigured(txHash);
+
+      if (!payment) {
+        throw new Error("Client broadcast flow requires a Payment challenge (parse WWW-Authenticate via parseWwwAuthenticateHeader)");
+      }
       return encodeAuthorizationCredential({
-        method: BNB_CHARGE_METHOD,
-        txHash,
-        from: this.config.signer.account.address,
-        serverNonce: challenge.serverNonce,
-        chainId: challenge.chainId,
+        challenge: payment.wire,
+        payload: {
+          type: "hash",
+          hash: txHash,
+          from: this.config.signer.account.address,
+        },
       });
     }
 
@@ -147,12 +183,18 @@ export class BnbClientChargeMethod {
       data: transferData,
     });
 
+    await this.waitIfConfigured(txHash);
+
+    if (!payment) {
+      throw new Error("Client broadcast flow requires a Payment challenge (parse WWW-Authenticate via parseWwwAuthenticateHeader)");
+    }
     return encodeAuthorizationCredential({
-      method: BNB_CHARGE_METHOD,
-      txHash,
-      from: this.config.signer.account.address,
-      serverNonce: challenge.serverNonce,
-      chainId: challenge.chainId,
+      challenge: payment.wire,
+      payload: {
+        type: "hash",
+        hash: txHash,
+        from: this.config.signer.account.address,
+      },
     });
   }
 
@@ -172,8 +214,8 @@ export class BnbClientChargeMethod {
       throw new Error("402 response missing WWW-Authenticate header");
     }
 
-    const challenge = parseWwwAuthenticateHeader(header) as ChargeChallenge;
-    const authorization = await this.handleChallenge(challenge);
+    const paymentChallenge = parseWwwAuthenticateHeader(header);
+    const authorization = await this.handleChallenge(paymentChallenge);
 
     const headers = new Headers(init?.headers);
     headers.set("Authorization", authorization);
