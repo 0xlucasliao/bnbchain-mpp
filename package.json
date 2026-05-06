@@ -1,0 +1,51 @@
+{
+  "name": "@bnb/mpp",
+  "version": "0.1.0",
+  "description": "BNB Chain Machine Payments Protocol charge implementation",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "default": "./dist/client/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "default": "./dist/server/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "test:live": "vitest run test/bnbchain.live-full-run.test.ts",
+    "lint": "tsc --noEmit",
+    "demo:dev": "npm run build && npm install --prefix demo && npm run dev --prefix demo",
+    "demo:build": "npm run build && npm install --prefix demo && npm run build --prefix demo"
+  },
+  "keywords": [
+    "mpp",
+    "bnb",
+    "payments",
+    "402",
+    "http-payment-auth"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "canonicalize": "^3.0.0",
+    "viem": "^2.38.3",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^24.7.2",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
